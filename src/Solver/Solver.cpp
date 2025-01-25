@@ -3,6 +3,7 @@
 Solver::Solver(const uint window_size)
     : m_substeps    { 8 }
     , m_window_size { window_size }
+    , m_particles(m_numParticles)
 {
     m_grid_spacing = 2 * std::sqrt(m_mass);
     // m_grid_spacing = window_size;
@@ -30,6 +31,8 @@ Solver::Solver(const uint window_size)
     for (std::vector<std::size_t>& cell : m_grid) { cell.reserve(4); }
 
     precomputeNeighborIndices();
+
+    for (uint i = 0; i < 10; ++i) { m_cached_fudge_factors[i] = generateFudgeFactor(1e-6); }
 }
 
 void Solver::precomputeNeighborIndices()
@@ -42,16 +45,16 @@ void Solver::precomputeNeighborIndices()
             {
                 const auto& [i, j] = m_neighbor_offsets[k];
                 
-                std::size_t neighbor_i { static_cast<std::size_t>(cell_i + i) };
-                std::size_t neighbor_j { static_cast<std::size_t>(cell_j + j) };
+                int neighbor_i { (cell_i + i) };
+                int neighbor_j { (cell_j + j) };
                 
                 // handle boundaries
                 if
                 (
-                    neighbor_i < 0              ||
-                    neighbor_j < 0              ||
-                    neighbor_i > m_max_cell_idx ||
-                    neighbor_j > m_max_cell_idx
+                    neighbor_i < 0                                ||
+                    neighbor_j < 0                                ||
+                    neighbor_i > static_cast<int>(m_max_cell_idx) ||
+                    neighbor_j > static_cast<int>(m_max_cell_idx)
                     ) { continue; }
                 
                 m_neighbor_indices
@@ -75,9 +78,14 @@ double Solver::generateFudgeFactor(const double& max_fudgeness)
     return dis(gen);
 }
 
-Point2D Solver::applyFudgeFactor(const Point2D& n_perp, const double& max_fudgeness)
+double Solver::getFudgeFactor(const double& hash_key)
 {
-    double fudge { generateFudgeFactor(max_fudgeness) };
+    return m_cached_fudge_factors[static_cast<uint>(hash_key) % 10];
+}
+
+Point2D Solver::applyFudgeFactor(const Point2D& n_perp)
+{
+    const double& fudge { getFudgeFactor(n_perp.x()) };
 
     return
     {
@@ -86,24 +94,24 @@ Point2D Solver::applyFudgeFactor(const Point2D& n_perp, const double& max_fudgen
     };
 }
 
-std::size_t Solver::particlePositionToCellIndex(Particle& particle)
+std::size_t Solver::particlePositionToCellIndex(std::size_t particle_ID)
 {
     return flattenGridIndices
         (
-            static_cast<std::size_t>(particle.position.x()/m_grid_spacing),
-            static_cast<std::size_t>(particle.position.y()/m_grid_spacing)
+            static_cast<std::size_t>(m_particles.position[particle_ID].x() / m_grid_spacing),
+            static_cast<std::size_t>(m_particles.position[particle_ID].y() / m_grid_spacing)
         );
 }
 
-void Solver::binNewParticle(Particle& particle)
+void Solver::binNewParticle(std::size_t particle_ID)
 {
-    std::size_t cell_idx { particlePositionToCellIndex(particle) };
-    particle.cell_idx = cell_idx;
-    particle.cell_idx_idx = m_grid[cell_idx].size();
-    m_grid[cell_idx].emplace_back(particle.ID);
+    std::size_t cell_idx { particlePositionToCellIndex(particle_ID) };
+    m_particles.cell_idx[particle_ID] = cell_idx;
+    m_particles.cell_idx_idx[particle_ID] = m_grid[cell_idx].size();
+    m_grid[cell_idx].emplace_back(particle_ID);
 }
 
-void Solver::removeParticleFromCell(Particle& particle)
+void Solver::removeParticleFromCell(std::size_t particle_ID)
 {
     /*
     To avoid reshifting data after removal of particle,
@@ -111,14 +119,14 @@ void Solver::removeParticleFromCell(Particle& particle)
     cell array before removal.
     */
 
-    std::size_t cell_idx = particle.cell_idx;
-    std::size_t cell_idx_idx = particle.cell_idx_idx;
+    std::size_t cell_idx = m_particles.cell_idx[particle_ID];
+    std::size_t cell_idx_idx = m_particles.cell_idx_idx[particle_ID];
     
     if (cell_idx_idx != m_grid[cell_idx].size() - 1)
     {
         std::swap(m_grid[cell_idx][cell_idx_idx], m_grid[cell_idx].back());
         // Update the index of the particle that was swapped
-        m_particles[m_grid[cell_idx][cell_idx_idx]].cell_idx_idx = cell_idx_idx;
+        m_particles.cell_idx_idx[m_grid[cell_idx][cell_idx_idx]] = cell_idx_idx;
     }
     // Remove the last element (which was the particle that just moved)
     m_grid[cell_idx].pop_back();
@@ -130,38 +138,21 @@ void Solver::removeParticleFromCell(Particle& particle)
     // );
 }
 
-void Solver::binParticles(bool use_temp_grid)
+void Solver::binParticles()
 {
-    if (use_temp_grid)
+    for (std::size_t& particle_ID : m_particles.ID)
     {
-        std::vector<std::vector<std::size_t>> temp_grid(m_grid.size());
-    
-        for (Particle& particle : m_particles)
+        std::size_t cell_idx { particlePositionToCellIndex(particle_ID) };
+
+        // only rebin particles that moved to a new cell
+        if (cell_idx != m_particles.cell_idx[particle_ID])
         {
-            std::size_t cell_idx { particlePositionToCellIndex(particle) };
-            temp_grid[cell_idx].emplace_back(particle.ID);
-            particle.cell_idx = cell_idx;
-            particle.cell_idx_idx = temp_grid[cell_idx].size();
-        }
+            // m_grid[cell_idx].erase(m_grid[cell_idx].begin() + particle.cell_idx_idx);
+            removeParticleFromCell(particle_ID);
 
-        m_grid = std::move(temp_grid);
-    }
-    else
-    {
-        for (Particle& particle : m_particles)
-        {
-            std::size_t cell_idx { particlePositionToCellIndex(particle) };
-
-            // only rebin particles that moved to a new cell
-            if (cell_idx != particle.cell_idx)
-            {
-                // m_grid[cell_idx].erase(m_grid[cell_idx].begin() + particle.cell_idx_idx);
-                removeParticleFromCell(particle);
-
-                particle.cell_idx = cell_idx;
-                particle.cell_idx_idx = m_grid[cell_idx].size();
-                m_grid[cell_idx].emplace_back(particle.ID);
-            }
+            m_particles.cell_idx[particle_ID] = cell_idx;
+            m_particles.cell_idx_idx[particle_ID] = m_grid[cell_idx].size();
+            m_grid[cell_idx].emplace_back(particle_ID);
         }
     }
 }
@@ -176,19 +167,19 @@ std::size_t Solver::flattenGridIndices(const std::size_t& x_idx, const std::size
     return x_idx * (m_max_cell_idx + 1) + y_idx;
 }
 
-void Solver::resolveParticleCollisions(Particle& particle, Particle& other_particle)
+void Solver::resolveParticleCollisions(std::size_t particle_ID, std::size_t& other_particle_ID)
 {
-    double min_distance { particle.radius + other_particle.radius };
-    if ( (particle.position - other_particle.position).mag2() < min_distance * min_distance )
+    double min_distance { m_particles.radius[particle_ID] + m_particles.radius[other_particle_ID] };
+    if ( (m_particles.position[particle_ID] - m_particles.position[other_particle_ID]).mag2() < min_distance * min_distance )
     {
-        Point2D r { particle.position - other_particle.position };
+        Point2D r { m_particles.position[particle_ID] - m_particles.position[other_particle_ID] };
         Point2D n { r.normalized() };
         
         // adjust positions so there is no overlap
-        double overlap { particle.radius + other_particle.radius - r.magnitude() };
+        double overlap { m_particles.radius[particle_ID] + m_particles.radius[other_particle_ID] - r.magnitude() };
 
         // introduce fudge factor so particles can't stack themselves out of the domain
-        Point2D fudge_vec { applyFudgeFactor(n.perp(), 1e-6) };
+        Point2D fudge_vec { applyFudgeFactor(n.perp()) };
 
         // particle.position       += overlap/2 * n + fudge_vec;
         // other_particle.position -= overlap/2 * n - fudge_vec;
@@ -197,12 +188,12 @@ void Solver::resolveParticleCollisions(Particle& particle, Particle& other_parti
         other_particle.position -= overlap/2 * n;
         */
 
-        double mass_ratio_i { 2 * other_particle.mass / (particle.mass + other_particle.mass) };
-        double mass_ratio_j { 2 *       particle.mass / (particle.mass + other_particle.mass) };
+        double mass_ratio_i { 2 * m_particles.mass[other_particle_ID] / (m_particles.mass[particle_ID] + m_particles.mass[other_particle_ID]) };
+        double mass_ratio_j { 2 *       m_particles.mass[particle_ID] / (m_particles.mass[particle_ID] + m_particles.mass[other_particle_ID]) };
         
         
-        particle.position       += overlap/2 * n * mass_ratio_i * m_damping + fudge_vec;
-        other_particle.position -= overlap/2 * n * mass_ratio_j * m_damping - fudge_vec;
+        m_particles.position[particle_ID]       += overlap/2 * n * mass_ratio_i * m_damping + fudge_vec;
+        m_particles.position[other_particle_ID] -= overlap/2 * n * mass_ratio_j * m_damping - fudge_vec;
         
         /*
         // for elastic collisions
@@ -230,14 +221,14 @@ void Solver::resolveCollisions()
                 // Recall: each cell contains particle ID's which correspond to their indices in the m_particles vector
                 for (std::size_t i = 0; i < m_grid[cell_idx].size(); ++i)
                 {
-                    Particle& particle { m_particles[m_grid[cell_idx][i]] };
+                    std::size_t particle_ID { m_particles.ID[m_grid[cell_idx][i]] };
 
                     for (std::size_t j = 0; j < m_grid[neighbor_idx].size(); ++j)
                     {
-                        Particle& other_particle { m_particles[m_grid[neighbor_idx][j]] };
-                        if (particle.ID != other_particle.ID)
+                        std::size_t other_particle_ID { m_particles.ID[m_grid[neighbor_idx][j]] };
+                        if (particle_ID != other_particle_ID)
                         {
-                            for (int i = 0; i < max_collision_resolution_count; ++i) { resolveParticleCollisions(particle, other_particle); }
+                            for (int i = 0; i < max_collision_resolution_count; ++i) { resolveParticleCollisions(particle_ID, other_particle_ID); }
                         }
                     }
                 }
@@ -246,34 +237,38 @@ void Solver::resolveCollisions()
     }
 }
 
-void Solver::applyBoundaryConditions(Particle& particle)
+void Solver::applyBoundaryConditions(std::size_t particle_ID)
 {
-    particle.position.setX(std::clamp(particle.position.x(), particle.radius, m_window_size - particle.radius));
-    particle.position.setY(std::clamp(particle.position.y(), particle.radius, m_window_size - particle.radius));
+    m_particles.position[particle_ID].setX(std::clamp(m_particles.position[particle_ID].x(), m_particles.radius[particle_ID], m_window_size - m_particles.radius[particle_ID]));
+    m_particles.position[particle_ID].setY(std::clamp(m_particles.position[particle_ID].y(), m_particles.radius[particle_ID], m_window_size - m_particles.radius[particle_ID]));
 }
 
-void Solver::applyNoVelocityBC(Particle& particle)
+void Solver::applyNoVelocityBC(std::size_t particle_ID)
 {
-    if (particle.position.x() < particle.radius)
-    {
-        particle.position.setX(particle.radius);
-        particle.velocity.setX(particle.radius - m_damping * (particle.velocity.x() - particle.radius));
-    }
-    else if (particle.position.x() > m_window_size - particle.radius)
-    {
-        particle.position.setX(m_window_size - particle.radius);
-        particle.velocity.setX((m_window_size - particle.radius) - m_damping * (particle.velocity.x() - (m_window_size - particle.radius)));
-    }
+    Point2D& position { m_particles.position[particle_ID] };
+    Point2D& position_previous { m_particles.position_previous[particle_ID] };
+    const double radius { m_particles.radius[particle_ID] };
 
-    if (particle.position.y() < particle.radius)
+    if (position.x() < radius)
     {
-        particle.position.setY(particle.radius);
-        particle.velocity.setY(particle.radius - m_damping * (particle.velocity.y() - particle.radius));
+        position.setX(radius);
+        position_previous.setX(radius - m_damping * (m_particles.position_previous[particle_ID].x() - radius));
     }
-    else if (particle.position.y() > m_window_size - particle.radius)
+    else if (position.x() > m_window_size - radius)
     {
-        particle.position.setY(m_window_size - particle.radius);
-        particle.velocity.setY((m_window_size - particle.radius) - m_damping * (particle.velocity.y() - (m_window_size - particle.radius)));
+        position.setX(m_window_size - radius);
+        position_previous.setX((m_window_size - radius) - m_damping * (m_particles.position_previous[particle_ID].x() - (m_window_size - radius)));
+    }
+    
+    if (position.y() < radius)
+    {
+        position.setY(radius);
+        position_previous.setY(radius - m_damping * (m_particles.position_previous[particle_ID].y() - radius));
+    }
+    else if (position.y() > m_window_size - radius)
+    {
+        position.setY(m_window_size - radius);
+        position_previous.setY((m_window_size - radius) - m_damping * (m_particles.position_previous[particle_ID].y() - (m_window_size - radius)));
     }
 }
 
@@ -285,21 +280,24 @@ void Solver::updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& wind
     {
         resolveCollisions();
         
-        for (std::size_t i = 0; i < m_particles.size(); ++ i)
+        for (std::size_t i = 0; i < m_particles.size; ++ i)
         {
-            Particle& particle { m_particles[i] };
+            std::size_t& particle_ID { m_particles.ID[i] };
+            
+            Point2D position { m_particles.position[particle_ID] };
 
             // Point2D a_tot { m_a_global + m_config.mouse_force / particle.mass * graphics.m_mouse.particleInteraction(particle.position) };
             // here we clamp displacement so that "velocity" gets clamped: |dx/dt| < v_max ==> |dx| < v_max * dt = v_max / frame_rate
-            Point2D a_tot { m_a_global + m_mouse_force * graphics.m_mouse.particleInteraction(particle.position) };
+            Point2D a_tot { m_a_global + m_mouse_force * graphics.m_mouse.particleInteraction(position) };
             // Point2D a_tot { m_a_global };
 
             
             // Point2D next_r { 2 * particle.position - particle.velocity + a_tot*dt*dt };
-            Point2D next_r { particle.position + (particle.position - particle.velocity).clamped(1.5) + a_tot*dt*dt };
-            particle.velocity = particle.position;
-            particle.position = next_r;
-            applyNoVelocityBC(particle);
+            Point2D next_r { position + (position - m_particles.position_previous[particle_ID]).clamped(1.5) + a_tot*dt*dt };
+
+            m_particles.position_previous[particle_ID] = position;
+            m_particles.position[particle_ID] = next_r;
+            applyNoVelocityBC(particle_ID);
             
 
             /*
@@ -335,23 +333,23 @@ void Solver::updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& wind
             }
             */
 
-            std::size_t cell_idx { particlePositionToCellIndex(particle) };
+            std::size_t cell_idx { particlePositionToCellIndex(particle_ID) };
             // only rebin the particle if it moves to a new cell
-            if (cell_idx != particle.cell_idx)
+            if (cell_idx != m_particles.cell_idx[particle_ID])
             {
                 // m_grid[cell_idx].erase(m_grid[cell_idx].begin() + static_cast<std::vector<std::size_t>::difference_type>(particle.cell_idx_idx));
 
-                removeParticleFromCell(particle);
+                removeParticleFromCell(particle_ID);
 
-                particle.cell_idx = cell_idx;
-                particle.cell_idx_idx = m_grid[cell_idx].size();
-                m_grid[cell_idx].emplace_back(particle.ID);
+                m_particles.cell_idx[particle_ID] = cell_idx;
+                m_particles.cell_idx_idx[particle_ID] = m_grid[cell_idx].size();
+                m_grid[cell_idx].emplace_back(particle_ID);
             }
 
             if (substep + 1 == m_substeps)
             {
                 // since we're already looping through particles, might as well render it now too!
-                renderParticle(particle, window_target);
+                renderParticle(particle_ID, window_target);
             }
         }
     }
@@ -365,11 +363,11 @@ sf::Text Solver::cellNumberText(const std::size_t& idx, Graphics& graphics)
     text.setFillColor(sf::Color::Green); // set the color
     
     const auto& [idx_x, idx_y] = unflattenGridIndices(idx);
-    text.setPosition(sf::Vector2f
-    (
+    text.setPosition(
+    {
         (static_cast<float>(idx_x) + 0.5f) * static_cast<float>(m_grid_spacing) - character_size / 2,
         (static_cast<float>(idx_y) + 0.5f) * static_cast<float>(m_grid_spacing) - character_size / 2
-    ));
+    });
 
     return text;
 }
@@ -378,19 +376,19 @@ void Solver::drawCells(sf::RenderTarget& target_window)
 {
     for (std::size_t i = 0; i < m_grid.size(); ++i)
     {
-        sf::RectangleShape boundingBox(sf::Vector2f
-        (
+        sf::RectangleShape boundingBox(
+        {
             static_cast<float>(m_grid_spacing),
             static_cast<float>(m_grid_spacing)
-        ));
+        });
         
         const auto& [idx_x, idx_y] = unflattenGridIndices(i);
 
-        boundingBox.setPosition(sf::Vector2f
-        (
+        boundingBox.setPosition(
+        {
             (static_cast<float>(idx_x)) * static_cast<float>(m_grid_spacing),
             (static_cast<float>(idx_y)) * static_cast<float>(m_grid_spacing)
-        ));
+        });
 
         boundingBox.setOutlineColor(sf::Color::Green);
         boundingBox.setOutlineThickness(0.5f);
@@ -405,19 +403,19 @@ void Solver::drawCells(sf::RenderTarget& target_window, Graphics& graphics)
     {
         target_window.draw(cellNumberText(i, graphics));
 
-        sf::RectangleShape boundingBox(sf::Vector2f
-        (
+        sf::RectangleShape boundingBox(
+        {
             static_cast<float>(m_grid_spacing),
             static_cast<float>(m_grid_spacing)
-        ));
+        });
         
         const auto& [idx_x, idx_y] = unflattenGridIndices(i);
 
-        boundingBox.setPosition(sf::Vector2f
-        (
+        boundingBox.setPosition(
+        {
             (static_cast<float>(idx_x)) * static_cast<float>(m_grid_spacing),
             (static_cast<float>(idx_y)) * static_cast<float>(m_grid_spacing)
-        ));
+        });
 
         boundingBox.setOutlineColor(sf::Color::Green);
         boundingBox.setOutlineThickness(0.5f);
@@ -426,20 +424,22 @@ void Solver::drawCells(sf::RenderTarget& target_window, Graphics& graphics)
     }
 }
 
-void Solver::renderParticle(Particle& particle, sf::RenderTarget& window_target)
+void Solver::renderParticle(std::size_t particle_ID, sf::RenderTarget& window_target)
 {
-    sf::CircleShape circle(static_cast<float>(particle.radius));
-    circle.setOrigin(sf::Vector2f(static_cast<float>(particle.radius), static_cast<float>(particle.radius)));
-    circle.setPosition(sf::Vector2f(static_cast<float>(particle.position.x()), static_cast<float>(particle.position.y())));
-    circle.setFillColor(particle.color);
+    const float radius { static_cast<float>(m_particles.radius[particle_ID]) };
+    
+    sf::CircleShape circle(radius);
+    circle.setOrigin({radius, radius});
+    circle.setPosition({static_cast<float>(m_particles.position[particle_ID].x()), static_cast<float>(m_particles.position[particle_ID].y())});
+    circle.setFillColor(m_particles.color[particle_ID]);
     window_target.draw(circle);
 }
 
 void Solver::renderParticles(sf::RenderTarget& window_target)
 {
-    for (Particle& particle : m_particles)
+    for (std::size_t particle_ID : m_particles.ID)
     {
-        renderParticle(particle, window_target);
+        renderParticle(particle_ID, window_target);
     }
 }
 
@@ -502,7 +502,7 @@ void Solver::run()
     float generator_elapsed_time { 0.0f };
     sf::Text fps_text { graphics.fpsText() };
 
-    sf::RenderWindow window(sf::VideoMode({m_window_size, m_window_size}), "Verlet Simulation");
+    sf::RenderWindow window(sf::VideoMode({m_window_size, m_window_size}), "Simulation :)");
     window.setFramerateLimit(m_frame_rate);
     // sf::ContextSettings settings;
     // settings.antiAliasingLevel = 1;
@@ -516,18 +516,22 @@ void Solver::run()
             if (event->is<sf::Event::Closed>() || sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Escape)) { window.close(); }
         }
         
-        if (generator.generateBool(generator_elapsed_time) && m_particles.size() < static_cast<std::size_t>(generator.m_numParticles))
+        if (generator.generateBool(generator_elapsed_time) && m_particles.size < generator.m_numParticles)
         {
             generator_elapsed_time = 0.0f;
 
             for (int counter = 0; counter < m_numGenerators; ++counter)
             {
-                Particle new_particle { generator.generate(m_particles.size(), {counter * 100.0, 0.0}) };
-                // for simple Verlet
-                new_particle.velocity = new_particle.position - generator.m_velocity * m_dt;
-                binNewParticle(new_particle);
-                m_particles.emplace_back(new_particle);
-                renderParticle(new_particle, window);
+                generator.generate(m_particles, m_dt, {counter * 100.0, 0.0});
+                binNewParticle(m_particles.size);
+                renderParticle(m_particles.size, window);
+
+                m_particles.size += 1;
+
+                // Particle new_particle { generator.generate(m_particles.size, {counter * 100.0, 0.0}) };
+                // // for simple Verlet
+                // new_particle.velocity = new_particle.position - generator.m_velocity * m_dt;
+                // m_particles.emplace_back(new_particle);
             }
         }
 
@@ -553,7 +557,7 @@ void Solver::run()
         
         renderParticles(window);
         window.draw(fps_text);
-        window.draw(graphics.particleCount(m_particles.size()));
+        window.draw(graphics.particleCount(m_particles.size));
         drawMouse(window, graphics);
         
         window.display();

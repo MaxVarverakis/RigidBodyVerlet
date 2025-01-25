@@ -1,12 +1,13 @@
 #pragma once
 
 #include "../Points/Points.hpp"
+#include "../Particles/Particles.hpp"
 #include "../Graphics/Graphics.hpp"
 
 struct ParticleGenerator
 {
     float m_generator_time_offset;
-    int m_numParticles;
+    std::size_t m_numParticles;
     const double m_mass;
     Point2D m_location;
     Point2D m_velocity;
@@ -14,7 +15,7 @@ struct ParticleGenerator
     ParticleGenerator
     (
         const float generator_time_offset,
-        const int numParticles,
+        const std::size_t numParticles,
         const double mass,
         const Point2D location,
         const Point2D velocity
@@ -26,9 +27,9 @@ struct ParticleGenerator
         , m_velocity {velocity}
     {}
     
-    Particle generate(const std::size_t idx, const Point2D& location_offset = {0.0, 0.0});
+    void generate(Particles& particles, const double dt, const Point2D& location_offset = {0.0, 0.0});
 
     bool generateBool(const float& elapsed_time);
 
-    sf::Color colorOnSpawnIterationLinear(const float& normalized_iteration);
+    sf::Color colorOnSpawnIterationLinear(std::size_t idx);
 };

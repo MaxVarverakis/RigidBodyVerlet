@@ -10,7 +10,7 @@ struct Mouse
     Mouse(const float& mouse_radius)
     {
         m_shape.setRadius(mouse_radius);
-        m_shape.setOrigin(sf::Vector2f(mouse_radius, mouse_radius));
+        m_shape.setOrigin({mouse_radius, mouse_radius});
         m_shape.setFillColor(sf::Color::Transparent);
         m_shape.setOutlineThickness(1);
         m_shape.setPointCount(32);
@@ -25,7 +25,7 @@ struct Mouse
     
     void setMouseRadiusColor(sf::Color color) { m_shape.setOutlineColor(color); }
 
-    Point2D particleInteraction(Point2D& position)
+    Point2D particleInteraction(const Point2D& position)
     {
         Point2D cursor_location { this->positionP2D() };
         double distance { position.distanceTo(cursor_location) };
@@ -46,7 +46,7 @@ struct Mouse
         }
         else
         {
-            return Point2D{0.0, 0.0};
+            return {0.0, 0.0};
         }
     }
 };

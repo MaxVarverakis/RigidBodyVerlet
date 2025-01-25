@@ -8,7 +8,7 @@ sf::Text Graphics::fpsText()
 
     text.setCharacterSize(16); // in pixels, not points!
     text.setFillColor(sf::Color::Red); // set the color
-    text.setPosition(sf::Vector2f(10.0f, 10.0f)); // Position at top-left corner
+    text.setPosition({10.0f, 10.0f}); // Position at top-left corner
 
     return text;
 }
@@ -19,7 +19,7 @@ sf::Text Graphics::particleCount(const std::size_t& count)
 
     text.setCharacterSize(16); // in pixels, not points!
     text.setFillColor(sf::Color::Red); // set the color
-    text.setPosition(sf::Vector2f(10.0f, 26.0f)); // Position at top-left corner (offset vertically by FPS text size)
+    text.setPosition({10.0f, 26.0f}); // Position at top-left corner (offset vertically by FPS text size)
 
     return text;
 }

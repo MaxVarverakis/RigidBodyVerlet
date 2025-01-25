@@ -9,7 +9,7 @@ class Solver
 private:
     const int m_substeps;
     uint m_window_size;
-    std::vector<Particle> m_particles;
+    Particles m_particles;
 
     std::size_t m_max_cell_idx;
     int m_max_cell_idx_int;
@@ -19,14 +19,16 @@ private:
     
     static constexpr int m_neighbor_offsets[5][2] { {0,0}, {0,1}, {1,0}, {1,1}, {1,-1} };
     
-    const uint32_t m_frame_rate { 60 };
+    double m_cached_fudge_factors[10];
+
+    const uint32_t m_frame_rate { 120 };
     const double m_dt { 1.0 / m_frame_rate };
     Point2D m_a_global { 0.0, 500.0 };
     const double m_damping { 0.75 };
-    const double m_mass { 16.0 };
+    const double m_mass { 25.0 };
     const double m_mouse_force { 20.0 * m_a_global.magnitude() };
     const int max_collision_resolution_count { 1 };
-    const int m_numParticles { 3000 };
+    const std::size_t m_numParticles { 3000 };
     const int m_numGenerators { 5 };
 
 public:
@@ -36,29 +38,29 @@ public:
 
     double generateFudgeFactor(const double& max_fudgeness);
 
-    Point2D applyFudgeFactor(const Point2D& n_perp, const double& max_fudgeness);
+    double getFudgeFactor(const double& hash_key);
+
+    Point2D applyFudgeFactor(const Point2D& n_perp);
 
     std::size_t flattenGridIndices(const std::size_t& x_idx, const std::size_t& y_idx);
 
     std::array<std::size_t, 2> unflattenGridIndices(const std::size_t& idx);
 
-    std::size_t particlePositionToCellIndex(Particle& particle);
+    std::size_t particlePositionToCellIndex(std::size_t particle_ID);
 
-    void binNewParticle(Particle& particle);
+    void binNewParticle(std::size_t particle_ID);
 
-    void removeParticleFromCell(Particle& particle);
+    void removeParticleFromCell(std::size_t particle_ID);
 
-    void binParticles(bool use_temp_grid = false);
+    void binParticles();
 
-    void resolveParticleCollisions(Particle& particle, Particle& other_particle);
-    
-    // void resolveCellCollisions(const int cell_i, const int cell_j, const int rel_i, const int rel_j);
+    void resolveParticleCollisions(std::size_t particle_ID, std::size_t& other_particle_ID);
 
     void resolveCollisions();
     
-    void applyBoundaryConditions(Particle& particle);
+    void applyBoundaryConditions(std::size_t particle_ID);
 
-    void applyNoVelocityBC(Particle& particle);
+    void applyNoVelocityBC(std::size_t particle_ID);
 
     void updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& window_target);
 
@@ -70,7 +72,7 @@ public:
 
     void renderParticles(sf::RenderTarget& window_target);
     
-    void renderParticle(Particle& particle, sf::RenderTarget& window_target);
+    void renderParticle(std::size_t particle_ID, sf::RenderTarget& window_target);
 
     void arrowKeyGravity();
 

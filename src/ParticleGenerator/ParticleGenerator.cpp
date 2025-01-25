@@ -1,15 +1,19 @@
 #include "ParticleGenerator.hpp"
 
-Particle ParticleGenerator::generate(const std::size_t idx, const Point2D& location_offset)
-{
-    return
-    {
-        idx,
-        sf::Color { colorOnSpawnIterationLinear(idx) },
-        m_mass,
-        m_location + location_offset,
-        m_velocity,
-    };
+void ParticleGenerator::generate(Particles& particles, const double dt, const Point2D& location_offset)
+{    
+    const Point2D& location          { m_location + location_offset };
+    const Point2D& previous_location { location - m_velocity * dt };
+
+    particles.position.emplace_back(         location);
+    particles.position_previous.emplace_back(previous_location);
+    particles.mass.emplace_back(             m_mass);
+    particles.radius.emplace_back(           std::sqrt(m_mass));
+    particles.color.emplace_back(            colorOnSpawnIterationLinear(particles.size));
+    particles.ID.emplace_back(               particles.size);
+    particles.cell_idx.emplace_back(         0);
+    particles.cell_idx_idx.emplace_back(     0);
+
 }
 
 bool ParticleGenerator::generateBool(const float& elapsed_time)
@@ -17,9 +21,9 @@ bool ParticleGenerator::generateBool(const float& elapsed_time)
     return elapsed_time >= m_generator_time_offset;
 }
 
-sf::Color ParticleGenerator::colorOnSpawnIterationLinear(const float& idx)
+sf::Color ParticleGenerator::colorOnSpawnIterationLinear(std::size_t idx)
 {
-    const float normalized_idx { idx / m_numParticles };
+    const float normalized_idx { static_cast<float>(idx) / m_numParticles };
 
     std::uint8_t red;
     std::uint8_t green;
