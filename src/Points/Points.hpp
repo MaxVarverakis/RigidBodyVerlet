@@ -156,6 +156,11 @@ public:
     void setY(double y) { m_y = y; }
 
     // Methods
+    sf::Vector2f toVf()
+    {
+        return { static_cast<float>(m_x), static_cast<float>(m_y) };
+    }
+
     double distanceTo(const Point2D& other) const
     {
         return std::sqrt(

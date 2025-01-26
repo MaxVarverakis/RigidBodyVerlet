@@ -5,6 +5,8 @@ Solver::Solver(const uint window_size)
     , m_window_size { window_size }
     , m_particles(m_numParticles)
 {
+    m_circles.reserve(m_numParticles);
+
     m_grid_spacing = 2 * std::sqrt(m_mass);
     // m_grid_spacing = window_size;
 
@@ -33,6 +35,11 @@ Solver::Solver(const uint window_size)
     precomputeNeighborIndices();
 
     for (uint i = 0; i < 10; ++i) { m_cached_fudge_factors[i] = generateFudgeFactor(1e-6); }
+    
+    m_workers.reserve(m_num_threads);
+    m_cells_per_thread = static_cast<std::size_t>(m_grid.size() / m_num_threads);
+    m_particles_per_thread = static_cast<std::size_t>(m_particles.size / m_num_threads);
+    
 }
 
 void Solver::precomputeNeighborIndices()
@@ -159,7 +166,7 @@ void Solver::binParticles()
 
 std::array<std::size_t, 2> Solver::unflattenGridIndices(const std::size_t& idx)
 {
-    return std::array<std::size_t, 2>{static_cast<std::size_t>(idx / (m_max_cell_idx+1)), idx % (m_max_cell_idx+1)};
+    return {static_cast<std::size_t>(idx / (m_max_cell_idx+1)), idx % (m_max_cell_idx+1)};
 }
 
 std::size_t Solver::flattenGridIndices(const std::size_t& x_idx, const std::size_t& y_idx)
@@ -210,9 +217,13 @@ void Solver::resolveParticleCollisions(std::size_t particle_ID, std::size_t& oth
     }
 }
 
-void Solver::resolveCollisions()
+void Solver::resolveCollisions(std::size_t thread_ID)
 {
-    for (std::size_t cell_idx = 0; cell_idx < m_grid.size(); ++cell_idx)
+    for (
+            std::size_t cell_idx = (thread_ID * m_cells_per_thread);
+            cell_idx < ( (thread_ID == m_num_threads - 1) ? m_grid.size() : (thread_ID + 1) * m_cells_per_thread );
+            ++cell_idx
+        )
     {
         for (std::size_t neighbor_idx : m_neighbor_indices[cell_idx])
         {
@@ -222,7 +233,6 @@ void Solver::resolveCollisions()
                 for (std::size_t i = 0; i < m_grid[cell_idx].size(); ++i)
                 {
                     std::size_t particle_ID { m_particles.ID[m_grid[cell_idx][i]] };
-
                     for (std::size_t j = 0; j < m_grid[neighbor_idx].size(); ++j)
                     {
                         std::size_t other_particle_ID { m_particles.ID[m_grid[neighbor_idx][j]] };
@@ -272,18 +282,29 @@ void Solver::applyNoVelocityBC(std::size_t particle_ID)
     }
 }
 
-void Solver::updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& window_target)
+void Solver::parallelizeCollisions()
 {
-    const double& dt { m_dt / m_substeps };
-    
-    for (int substep = 0; substep < m_substeps; ++substep)
+    for (std::size_t thread_ID = 0; thread_ID < m_num_threads; ++thread_ID)
     {
-        resolveCollisions();
-        
-        for (std::size_t i = 0; i < m_particles.size; ++ i)
-        {
-            std::size_t& particle_ID { m_particles.ID[i] };
-            
+        m_workers.emplace_back(&Solver::resolveCollisions, this, thread_ID);
+    }
+
+    for (auto& thread : m_workers)
+    {
+        thread.join();  // Join all threads to ensure they complete before moving on
+    }
+
+    m_workers.clear();
+}
+
+void Solver::updateParticlesPerThread(std::size_t thread_ID, const int substep, const double dt, Graphics& graphics, sf::RenderTarget& window_target)
+{
+    for (
+            std::size_t particle_ID = (thread_ID * m_particles_per_thread);
+            particle_ID < ( (thread_ID == m_num_threads - 1) ? m_particles.size : (thread_ID + 1) * m_particles_per_thread );
+            ++particle_ID
+        )
+        {   
             Point2D position { m_particles.position[particle_ID] };
 
             // Point2D a_tot { m_a_global + m_config.mouse_force / particle.mass * graphics.m_mouse.particleInteraction(particle.position) };
@@ -299,7 +320,6 @@ void Solver::updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& wind
             m_particles.position[particle_ID] = next_r;
             applyNoVelocityBC(particle_ID);
             
-
             /*
             // update the position according to Verlet integration
             particle.position = particle.position + particle.velocity*dt + 0.5*a_tot*dt*dt;
@@ -349,9 +369,41 @@ void Solver::updateAndRenderParticles(Graphics& graphics, sf::RenderTarget& wind
             if (substep + 1 == m_substeps)
             {
                 // since we're already looping through particles, might as well render it now too!
+                m_circles[particle_ID].setPosition(m_particles.position[particle_ID].toVf());
                 renderParticle(particle_ID, window_target);
+
             }
         }
+}
+
+void Solver::parallelizeUpdates(const int substep, const double dt, Graphics& graphics, sf::RenderTarget& window_target)
+{
+    for (std::size_t thread_ID = 0; thread_ID < m_num_threads; ++thread_ID)
+        {
+            m_workers.emplace_back([this, thread_ID, substep, dt, &graphics, &window_target]
+            {
+                this->updateParticlesPerThread(thread_ID, substep, dt, graphics, window_target);
+            });
+        }
+
+        for (auto& thread : m_workers)
+        {
+            thread.join();  // Join all threads to ensure they complete before moving on
+        }
+        
+        m_workers.clear();
+}
+
+void Solver::update(Graphics& graphics, sf::RenderTarget& window_target)
+{
+    const double& dt { m_dt / m_substeps };
+    
+    for (int substep = 0; substep < m_substeps; ++substep)
+    {
+        parallelizeCollisions();
+        
+        parallelizeUpdates(substep, dt, graphics, window_target);
+
     }
 }
 
@@ -424,15 +476,21 @@ void Solver::drawCells(sf::RenderTarget& target_window, Graphics& graphics)
     }
 }
 
-void Solver::renderParticle(std::size_t particle_ID, sf::RenderTarget& window_target)
+void Solver::particleToCircleShape(std::size_t particle_ID)
 {
     const float radius { static_cast<float>(m_particles.radius[particle_ID]) };
     
     sf::CircleShape circle(radius);
     circle.setOrigin({radius, radius});
-    circle.setPosition({static_cast<float>(m_particles.position[particle_ID].x()), static_cast<float>(m_particles.position[particle_ID].y())});
+    circle.setPosition(m_particles.position[particle_ID].toVf());
     circle.setFillColor(m_particles.color[particle_ID]);
-    window_target.draw(circle);
+
+    m_circles.emplace_back(circle);
+}
+
+void Solver::renderParticle(std::size_t particle_ID, sf::RenderTarget& window_target)
+{
+    window_target.draw(m_circles[particle_ID]);
 }
 
 void Solver::renderParticles(sf::RenderTarget& window_target)
@@ -490,7 +548,7 @@ void Solver::run()
     
     ParticleGenerator generator
     (
-        10.0f, // milliseconds
+        1.0f, // milliseconds
         m_numParticles, // particles
         m_mass,
         {static_cast<double>(m_window_size)/4.0, static_cast<double>(m_window_size)/8.0},
@@ -501,11 +559,14 @@ void Solver::run()
     float fps_elapsed_time { 0.0f };
     float generator_elapsed_time { 0.0f };
     sf::Text fps_text { graphics.fpsText() };
-
-    sf::RenderWindow window(sf::VideoMode({m_window_size, m_window_size}), "Simulation :)");
-    window.setFramerateLimit(m_frame_rate);
+    
     // sf::ContextSettings settings;
     // settings.antiAliasingLevel = 1;
+    
+    // sf::RenderWindow window(sf::VideoMode({m_window_size, m_window_size}), "Simulation :)", sf::Style::Default, sf::State::Windowed, settings);
+    sf::RenderWindow window(sf::VideoMode({m_window_size, m_window_size}), "Simulation :)");
+
+    window.setFramerateLimit(m_frame_rate);
 
     while (window.isOpen())
     {
@@ -522,16 +583,13 @@ void Solver::run()
 
             for (int counter = 0; counter < m_numGenerators; ++counter)
             {
+                const std::size_t& ID { m_particles.size };
                 generator.generate(m_particles, m_dt, {counter * 100.0, 0.0});
-                binNewParticle(m_particles.size);
-                renderParticle(m_particles.size, window);
+                particleToCircleShape(ID);
+                renderParticle(ID, window);
+                binNewParticle(ID);
 
                 m_particles.size += 1;
-
-                // Particle new_particle { generator.generate(m_particles.size, {counter * 100.0, 0.0}) };
-                // // for simple Verlet
-                // new_particle.velocity = new_particle.position - generator.m_velocity * m_dt;
-                // m_particles.emplace_back(new_particle);
             }
         }
 
@@ -541,10 +599,12 @@ void Solver::run()
         window.clear(sf::Color::Black);
 
         // must keep update after the window clear since update also renders the particles
-        updateAndRenderParticles(graphics, window);
+        update(graphics, window);
 
         // draw cell borders (for debugging purposes). Pass `graphics` if also want cell indices displayed
         // drawCells(window);
+
+        // renderParticles(window);
 
         if (fps_elapsed_time  >= 500.0f)
         {
@@ -555,7 +615,6 @@ void Solver::run()
         generator_elapsed_time += elapsed_time;
         fps_elapsed_time       += elapsed_time;
         
-        renderParticles(window);
         window.draw(fps_text);
         window.draw(graphics.particleCount(m_particles.size));
         drawMouse(window, graphics);
@@ -563,4 +622,3 @@ void Solver::run()
         window.display();
     }
 }
-

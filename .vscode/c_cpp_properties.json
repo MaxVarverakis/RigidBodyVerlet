@@ -7,7 +7,10 @@
                 "${workspaceFolder}/src",
                 "/opt/homebrew/Cellar/nlohmann-json/3.11.3/include",
                 "/opt/homebrew/Cellar/libomp//19.1.6/include",
-                "/opt/homebrew/Cellar/sfml/3.0.0/include"
+                "/opt/homebrew/Cellar/sfml/3.0.0/include",
+                "/opt/homebrew/Cellar/SDL2/2.30.11/include",
+                "/opt/homebrew/Cellar/glew/2.2.0_1/include",
+                "/opt/homebrew/Cellar/glfw/3.4/include"
             ],
             "defines": [],
             "macFrameworkPath": [
